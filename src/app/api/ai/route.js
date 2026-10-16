@@ -5,20 +5,24 @@ export async function POST(req) {
     const { prompt, action, code, filename } = await req.json();
     const apiKey = process.env.GEMINI_API_KEY?.trim();
 
-    // 1. If Gemini API Key is configured, use live Google Gemini 2.0 Flash
-    if (apiKey && apiKey !== "your-gemini-api-key-here" && apiKey.length > 5) {
-      try {
-        const actionGuidelines = {
-          explain: "Provide a detailed technical breakdown of this JavaScript code, including architecture, execution flow, and Big-O time and space complexity.",
-          fix: "Inspect this JavaScript code for syntax errors, logical bugs, unhandled promise rejections, type coercion issues, or edge cases. Explain the fixes and provide the corrected code in a ```javascript code block.",
-          optimize: "Analyze performance bottlenecks, memory allocations, and algorithmic complexity. Provide an optimized, high-performance refactored version in a ```javascript code block.",
-          test: "Write a comprehensive unit test suite (using Jest / Vitest syntax with describe, it, expect) covering normal cases, edge cases, and boundary conditions in a ```javascript code block.",
-          chat: "Answer the developer's question specifically in the context of their JavaScript code in the editor.",
-        };
+    // 1. If Gemini API Key is configured, query Gemini models with smart fallback
+    if (apiKey && apiKey.length > 10) {
+      const actionGuidelines = {
+        explain:
+          "Provide a clear, detailed technical explanation of this JavaScript code, including architecture, execution flow, and Big-O time and space complexity.",
+        fix:
+          "Inspect this JavaScript code for syntax errors, bugs, unhandled promise rejections, type coercion issues, or edge cases. Explain the fixes and provide the corrected code in a ```javascript code block.",
+        optimize:
+          "Analyze performance bottlenecks, memory allocations, and algorithmic complexity. Provide an optimized, high-performance refactored version in a ```javascript code block.",
+        test:
+          "Write a comprehensive unit test suite (using Jest / Vitest syntax with describe, it, expect) covering normal cases, edge cases, and boundary conditions in a ```javascript code block.",
+        chat:
+          "Answer the developer's question specifically in the context of their JavaScript code in the editor.",
+      };
 
-        const guideline = actionGuidelines[action] || actionGuidelines.chat;
+      const guideline = actionGuidelines[action] || actionGuidelines.chat;
 
-        const systemPrompt = `You are Nexus AI Copilot, an elite JavaScript architect and AI assistant inside NexusCode AI IDE.
+      const systemPrompt = `You are Nexus AI Copilot, an elite JavaScript architect and AI assistant inside NexusCode AI IDE.
 Active File: "${filename || "index.js"}"
 Action: ${action}
 
@@ -35,50 +39,59 @@ ${code || "// No code in editor"}
 
 Format your response in clean GitHub-flavored markdown. Whenever you suggest or refactor JavaScript code, format the complete runnable code strictly in a \`\`\`javascript ... \`\`\` block so the developer can click "Apply Fix to Editor".`;
 
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: systemPrompt }] }],
-              generationConfig: {
-                temperature: 0.2,
-                maxOutputTokens: 2048,
-              },
-            }),
+      // Supported active models in order of priority
+      const candidateModels = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
+      ];
+
+      for (const model of candidateModels) {
+        try {
+          const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: systemPrompt }] }],
+                generationConfig: {
+                  temperature: 0.2,
+                  maxOutputTokens: 2048,
+                },
+              }),
+            }
+          );
+
+          if (response.ok) {
+            const geminiData = await response.json();
+            const candidateText =
+              geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (candidateText) {
+              // Extract code block for the "Apply Fix to Editor" button
+              const codeBlockMatch = candidateText.match(
+                /```(?:javascript|js)\n([\s\S]*?)```/
+              );
+              const improvedCode = codeBlockMatch ? codeBlockMatch[1].trim() : null;
+
+              return NextResponse.json({
+                status: "success",
+                reply: candidateText,
+                improvedCode,
+                diffSummary: `Live analysis via ${model}`,
+                modelUsed: model,
+                timestamp: new Date().toISOString(),
+              });
+            }
           }
-        );
-
-        if (response.ok) {
-          const geminiData = await response.json();
-          const candidateText =
-            geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-          if (candidateText) {
-            // Extract code block for the "Apply Fix to Editor" button
-            const codeBlockMatch = candidateText.match(/```(?:javascript|js)\n([\s\S]*?)```/);
-            const improvedCode = codeBlockMatch ? codeBlockMatch[1].trim() : null;
-
-            return NextResponse.json({
-              status: "success",
-              reply: candidateText,
-              improvedCode,
-              diffSummary: "Live analysis via Gemini 2.0 Flash",
-              modelUsed: "gemini-2.0-flash",
-              timestamp: new Date().toISOString(),
-            });
-          }
-        } else {
-          const errorDetails = await response.json();
-          console.error("Gemini API Error details:", errorDetails);
+        } catch (modelErr) {
+          console.warn(`Model ${model} failed, trying next fallback:`, modelErr.message);
         }
-      } catch (err) {
-        console.error("Gemini API network error:", err);
       }
     }
 
-    // 2. Intelligent Built-in Fallback Engine (when API key is not yet configured)
+    // 2. Intelligent Built-in Fallback Engine (when API key is not yet configured or quota exhausted)
     let reply = "";
     let improvedCode = null;
     let diffSummary = "";
@@ -100,9 +113,7 @@ Here is a step-by-step breakdown of how your JavaScript code works:
    - **Space Complexity**: $\\mathcal{O}(1)$ auxiliary memory or $\\mathcal{O}(n)$ based on transformed arrays.
 4. **Best Practice Evaluation**:
    - Clean separation of concerns.
-   - Ready for modular export and browser or Node.js execution.
-
-> 💡 **Tip**: To get custom, line-by-line AI analysis on any code you write, add your free **\`GEMINI_API_KEY\`** in \`.env.local\` and Vercel!`;
+   - Ready for modular export and browser or Node.js execution.`;
         break;
 
       case "fix":
@@ -198,9 +209,7 @@ Here are actionable recommendations for your JavaScript code in **\`${filename |
 2. **Error Boundaries**:
    - Wrap async calls in \`try...catch\` blocks with structured error logging.
 3. **Execution Safety**:
-   - Run in strict mode (\`"use strict";\`) to catch silent errors and undeclared variables.
-
-> 💡 **Connect Live Gemini AI**: Add your free \`GEMINI_API_KEY\` from Google AI Studio to get real-time dynamic intelligence on any prompt!`;
+   - Run in strict mode (\`"use strict";\`) to catch silent errors and undeclared variables.`;
         break;
     }
 
