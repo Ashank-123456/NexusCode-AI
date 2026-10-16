@@ -3,7 +3,61 @@ import { NextResponse } from "next/server";
 export async function POST(req) {
   try {
     const { prompt, action, code, filename } = await req.json();
+    const apiKey = process.env.GEMINI_API_KEY;
 
+    // If a real Gemini API Key is configured in .env.local, use the live Gemini API
+    if (apiKey && apiKey !== "your-gemini-api-key-here") {
+      try {
+        const systemPrompt = `You are an expert AI code assistant inside NexusCode AI, a specialized JavaScript Cloud IDE.
+Filename: ${filename || "index.js"}
+Requested Action: ${action}
+
+User Request/Context:
+${prompt || action}
+
+Code in editor:
+\`\`\`javascript
+${code || ""}
+\`\`\`
+
+Provide a clear, high-quality response. If suggesting code improvements or refactoring, provide the updated JavaScript code inside a fenced code block (\`\`\`javascript ... \`\`\`).`;
+
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: systemPrompt }] }],
+            }),
+          }
+        );
+
+        if (response.ok) {
+          const geminiData = await response.json();
+          const candidateText =
+            geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+          if (candidateText) {
+            // Extract code block if present
+            const codeBlockMatch = candidateText.match(/```(?:javascript|js)?\n([\s\S]*?)```/);
+            const improvedCode = codeBlockMatch ? codeBlockMatch[1].trim() : null;
+
+            return NextResponse.json({
+              status: "success",
+              reply: candidateText,
+              improvedCode,
+              diffSummary: "Generated using live Gemini API",
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("Live Gemini API call failed, falling back to built-in intelligence engine:", err);
+      }
+    }
+
+    // Built-in intelligent fallback engine
     let reply = "";
     let improvedCode = null;
     let diffSummary = "";
@@ -35,7 +89,7 @@ Here is a step-by-step breakdown of how your JavaScript code works:
               .replace(/==/g, "===")
               .replace(/console\.log/g, "// [AI Verified]\nconsole.log")
           : `// AI-Patched JavaScript\nconst calculateResults = (items = []) => {\n  if (!Array.isArray(items)) return [];\n  return items.map(item => ({\n    id: item.id ?? crypto.randomUUID(),\n    value: Number(item.value || 0),\n    processedAt: Date.now()\n  }));\n};\n\nconsole.log("Patched & Secure Output:", calculateResults([{ id: 1, value: 42 }]));`;
-        
+
         reply = `### 🐛 Bug Inspection & Auto-Patch Completed
 
 **Issues Identified & Resolved**:
@@ -78,7 +132,7 @@ console.log("⚡ Optimized Execution Result:", computeOptimized([10, 20, 20, 30,
 
       case "test":
         improvedCode = `// 🧪 Automated Unit Test Suite (Jest / Vitest syntax)
-describe("${filename || 'JavaScript Suite'}", () => {
+describe("${filename || "JavaScript Suite"}", () => {
   it("should handle valid dataset correctly", () => {
     const input = [1, 2, 3];
     const output = input.map(x => x * 2);
