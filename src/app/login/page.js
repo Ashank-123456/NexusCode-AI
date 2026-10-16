@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import Script from "next/script";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import {
   Code2,
@@ -35,6 +36,7 @@ function parseJwt(token) {
 
 export default function LoginPage() {
   const { loginWithGoogle, user } = useAuth();
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [googleClientReady, setGoogleClientReady] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
@@ -42,6 +44,13 @@ export default function LoginPage() {
   const [customGoogleEmail, setCustomGoogleEmail] = useState("developer@gmail.com");
   const [customGoogleName, setCustomGoogleName] = useState("Google Developer");
   const googleBtnContainerRef = useRef(null);
+
+  // If already authenticated, redirect straight to IDE workspace
+  useEffect(() => {
+    if (user) {
+      router.push("/");
+    }
+  }, [user, router]);
 
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
